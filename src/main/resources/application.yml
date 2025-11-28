@@ -29,3 +29,10 @@ spring:
         completions-path: /chat/completions
         options:
           model: gemini-2.0-flash
+          temperature: 0.4
+
+# 🔽 ESSA PARTE É PRO GPT (USADA PELO GptService), FORA DO "spring"
+openai:
+  api:
+    key: ${OPENAI_API_KEY}
+    model: gpt-4o-mini

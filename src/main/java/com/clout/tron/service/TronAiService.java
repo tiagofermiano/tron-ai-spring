@@ -1,6 +1,7 @@
 package com.clout.tron.service;
 
 import com.clout.tron.ai.GeminiService;
+import com.clout.tron.ai.GptService;
 import com.clout.tron.dto.EstadoDTO;
 import com.clout.tron.entity.Jogada;
 import com.clout.tron.repository.JogadaRepository;
@@ -19,40 +20,43 @@ import java.util.stream.Collectors;
 public class TronAiService {
 
     private final GeminiService geminiService;
+    private final GptService gptService;
     private final JogadaRepository jogadaRepository;
     private final ObjectMapper objectMapper;
 
     private static final List<String> VALID_DIRECTIONS =
             List.of("UP", "DOWN", "LEFT", "RIGHT");
 
-    // cooldown pra não ficar levando 429 o tempo todo
-    private volatile long geminiCooldownUntil = 0L;
-
     public String decidirMovimento(EstadoDTO estado) {
+        // 1) histórico permanente do banco → RL leve global
+        List<Jogada> jogadasRecentes = jogadaRepository.findTop300ByOrderByIdDesc();
+        Map<String, Double> scoreAprendizado = calcularScoreAprendizadoPorAcao(jogadasRecentes);
 
-        // 1) Histórico “permanente” do banco → aprendizado leve
-        List<Jogada> jogadas = jogadaRepository.findTop300ByOrderByIdDesc();
-        Map<String, Double> scoreAprendizado = calcularScoreAprendizadoPorAcao(jogadas);
-        String historicoResumo = montarResumoHistorico(jogadas, scoreAprendizado);
-
-        long now = System.currentTimeMillis();
-
-        // 2) Se Gemini está em cooldown → usa só cérebro local
-        if (now < geminiCooldownUntil) {
-            log.debug("Gemini em cooldown até {}. Usando fallback agressivo/aprendido.", geminiCooldownUntil);
-            return decidirMovimentoFallbackAgressivo(estado, scoreAprendizado);
+        String estadoJson;
+        try {
+            estadoJson = objectMapper.writeValueAsString(estado);
+        } catch (Exception e) {
+            log.error("Erro ao serializar estado. Usando fallback direto.", e);
+            return decidirMovimentoFallbackSuperSobrevivencia(estado, scoreAprendizado);
         }
 
-        try {
-            String estadoJson = objectMapper.writeValueAsString(estado);
+        String resumoAprendizado = montarResumoHistorico(jogadasRecentes, scoreAprendizado);
 
-            String prompt = """
+        // 2) CACHE: tenta reaproveitar decisão em estados idênticos
+        String viaCache = decidirPorCache(estado, estadoJson);
+        if (viaCache != null) {
+            log.debug("Decisão obtida via cache de estado: {}", viaCache);
+            return viaCache;
+        }
+
+        // 3) Prompt único (serve tanto pro Gemini quanto pro GPT)
+        String prompt = """
 Você é a IA controlando a moto ROSA no jogo TRON.
 
 OBJETIVO:
 - Eliminar o adversário (moto azul) o mais rápido possível.
 - Jogar de forma AGRESSIVA, perseguindo e tentando encurralar o inimigo.
-- Nunca "desistir": mesmo em situações ruins, busque sobreviver o máximo possível, pois o jogador pode errar.
+- Nunca desistir: mesmo em situações ruins, busque sobreviver o máximo possível, pois o jogador pode errar.
 
 REGRAS DE MOVIMENTO:
 - A moto NÃO PODE inverter a direção imediatamente (sem andar de ré).
@@ -83,43 +87,85 @@ IMPORTANTE:
 - NÃO escreva comentários, explicações ou frases extras.
 
 Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)?
-""".formatted(historicoResumo, estadoJson);
+""".formatted(resumoAprendizado, estadoJson);
 
-            log.debug("Prompt Gemini:\n{}", prompt);
+        // 4) motor híbrido SEM cooldown: Gemini → (se falhar) GPT → (se falhar) fallback
 
-            String resposta = geminiService.gerarMovimento(prompt);
-            if (resposta == null) {
-                throw new IllegalStateException("Resposta nula do Gemini");
+        // 4.1 tenta Gemini
+        try {
+            String respostaGemini = geminiService.gerarMovimento(prompt);
+            String dir = normalizarDirecao(respostaGemini);
+            if (dir != null && isDirecaoSeguraProfunda(estado, dir, 8)) {
+                log.debug("Usando direção do Gemini: {}", dir);
+                return dir;
+            } else if (dir != null) {
+                log.warn("Direção do Gemini inválida ou não segura (mesmo com lookahead): {}. Indo para GPT.", dir);
             }
-
-            resposta = resposta.trim().toUpperCase();
-            log.debug("Resposta Gemini (raw): {}", resposta);
-
-            if (!VALID_DIRECTIONS.contains(resposta)) {
-                log.warn("Direção inválida do Gemini: {}. Usando fallback agressivo/aprendido.", resposta);
-                return decidirMovimentoFallbackAgressivo(estado, scoreAprendizado);
-            }
-
-            if (!isDirecaoSegura(estado, resposta)) {
-                log.warn("Direção do Gemini não segura (colisão/imediata ou ré): {}. Usando fallback agressivo/aprendido.", resposta);
-                return decidirMovimentoFallbackAgressivo(estado, scoreAprendizado);
-            }
-
-            return resposta;
-
         } catch (NonTransientAiException e) {
-            log.error("Erro de IA (Spring AI). Usando fallback agressivo/aprendido.", e);
-            if (e.getMessage() != null && e.getMessage().contains("429")) {
-                long cooldown = 30_000L;
-                geminiCooldownUntil = System.currentTimeMillis() + cooldown;
-                log.warn("Recebido 429 do Gemini. Ativando cooldown por {} ms.", cooldown);
-            }
-            return decidirMovimentoFallbackAgressivo(estado, scoreAprendizado);
-
+            log.error("Erro de IA (Gemini).", e);
         } catch (Exception e) {
-            log.error("Erro ao decidir movimento com Gemini. Usando fallback agressivo/aprendido.", e);
-            return decidirMovimentoFallbackAgressivo(estado, scoreAprendizado);
+            log.error("Erro genérico chamando Gemini.", e);
         }
+
+        // 4.2 tenta GPT
+        try {
+            String respostaGpt = gptService.gerarMovimento(prompt);
+            String dir = normalizarDirecao(respostaGpt);
+            if (dir != null && isDirecaoSeguraProfunda(estado, dir, 8)) {
+                log.debug("Usando direção do GPT: {}", dir);
+                return dir;
+            } else if (dir != null) {
+                log.warn("Direção do GPT inválida ou não segura (mesmo com lookahead): {}. Indo para fallback local.", dir);
+            }
+        } catch (Exception e) {
+            log.error("Erro ao chamar GPT. Indo direto para fallback local.", e);
+        }
+
+        // 5) se nenhum modelo deu uma jogada realmente boa → fallback local (super sobrevivência)
+        return decidirMovimentoFallbackSuperSobrevivencia(estado, scoreAprendizado);
+    }
+
+    // ========================= CACHE DE ESTADO =========================
+
+    private String decidirPorCache(EstadoDTO estado, String estadoJson) {
+        List<Jogada> jogadasMesmoEstado =
+                jogadaRepository.findTop50ByEstadoJsonOrderByIdDesc(estadoJson);
+
+        if (jogadasMesmoEstado == null || jogadasMesmoEstado.isEmpty()) {
+            return null;
+        }
+
+        Map<String, Long> winsPorAcao = jogadasMesmoEstado.stream()
+                .filter(j -> "WIN".equalsIgnoreCase(j.getResultado()))
+                .collect(Collectors.groupingBy(Jogada::getAcao, Collectors.counting()));
+
+        Map<String, Long> lossPorAcao = jogadasMesmoEstado.stream()
+                .filter(j -> "LOSE".equalsIgnoreCase(j.getResultado()))
+                .collect(Collectors.groupingBy(Jogada::getAcao, Collectors.counting()));
+
+        String melhorAcao = null;
+        double melhorScore = Double.NEGATIVE_INFINITY;
+
+        for (String dir : VALID_DIRECTIONS) {
+            long w = winsPorAcao.getOrDefault(dir, 0L);
+            long l = lossPorAcao.getOrDefault(dir, 0L);
+            double score = (double) (w - l) / (w + l + 1);
+
+            if (score > melhorScore && isDirecaoSeguraProfunda(estado, dir, 6)) {
+                melhorScore = score;
+                melhorAcao = dir;
+            }
+        }
+
+        return melhorAcao;
+    }
+
+    private String normalizarDirecao(String raw) {
+        if (raw == null) return null;
+        String dir = raw.trim().toUpperCase();
+        dir = dir.replaceAll("[^A-Z]", ""); // limpa tipo "LEFT." ou "LEFT\n"
+        if (!VALID_DIRECTIONS.contains(dir)) return null;
+        return dir;
     }
 
     // ========================= REGRAS DE MOVIMENTO =========================
@@ -146,7 +192,7 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
         return ocupado;
     }
 
-    private boolean isDirecaoSegura(EstadoDTO estado, String dir) {
+    private boolean isDirecaoSeguraImediata(EstadoDTO estado, String dir) {
         int n = estado.getBoardSize();
         boolean[][] ocupado = montarMatrizOcupacao(estado);
 
@@ -154,7 +200,6 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
         int by = estado.getBotY();
         String currentDir = estado.getBotDirection();
 
-        // não pode andar de ré
         if (isOpposite(dir, currentDir)) {
             return false;
         }
@@ -176,7 +221,79 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
         return !ocupado[ny][nx];
     }
 
-    // ========================= APRENDIZADO (RL LEVE) =========================
+    /**
+     * Segurança "profunda": simula alguns passos à frente.
+     * Se morre muito rápido, consideramos essa direção suicida.
+     */
+    private boolean isDirecaoSeguraProfunda(EstadoDTO estado, String dir, int depth) {
+        if (!isDirecaoSeguraImediata(estado, dir)) return false;
+
+        int n = estado.getBoardSize();
+        boolean[][] ocupado = montarMatrizOcupacao(estado);
+
+        int x = estado.getBotX();
+        int y = estado.getBotY();
+        String atualDir = dir;
+
+        // aplica o primeiro passo na direção sugerida
+        switch (atualDir) {
+            case "UP" -> y--;
+            case "DOWN" -> y++;
+            case "LEFT" -> x--;
+            case "RIGHT" -> x++;
+        }
+
+        if (x < 0 || x >= n || y < 0 || y >= n) return false;
+        if (ocupado[y][x]) return false;
+        ocupado[y][x] = true;
+
+        int survived = 0;
+
+        for (int step = 1; step < depth; step++) {
+            // tenta continuar ou virar sem ré
+            List<String> tentativas = new ArrayList<>();
+            tentativas.add(atualDir);
+            if (atualDir.equals("UP") || atualDir.equals("DOWN")) {
+                tentativas.add("LEFT");
+                tentativas.add("RIGHT");
+            } else {
+                tentativas.add("UP");
+                tentativas.add("DOWN");
+            }
+
+            boolean moveFeito = false;
+            for (String cand : tentativas) {
+                if (isOpposite(cand, atualDir)) continue;
+
+                int nx = x;
+                int ny = y;
+                switch (cand) {
+                    case "UP" -> ny--;
+                    case "DOWN" -> ny++;
+                    case "LEFT" -> nx--;
+                    case "RIGHT" -> nx++;
+                }
+
+                if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue;
+                if (ocupado[ny][nx]) continue;
+
+                x = nx;
+                y = ny;
+                atualDir = cand;
+                ocupado[ny][nx] = true;
+                survived++;
+                moveFeito = true;
+                break;
+            }
+
+            if (!moveFeito) break;
+        }
+
+        // se não aguenta nem metade dos passos de lookahead, consideramos ruim
+        return survived >= Math.max(1, depth / 2);
+    }
+
+    // ========================= APRENDIZADO (RL LEVE GLOBAL) =========================
 
     private Map<String, Double> calcularScoreAprendizadoPorAcao(List<Jogada> jogadas) {
         Map<String, Long> winsPorAcao = jogadas.stream()
@@ -197,27 +314,30 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
         return score;
     }
 
-    // ========================= FALLBACK AGRESSIVO + “VER O FUTURO” =========================
+    // ========================= FALLBACK LOCAL SUPER SOBREVIVÊNCIA =========================
 
-    private String decidirMovimentoFallbackAgressivo(EstadoDTO estado, Map<String, Double> scoreAprendizado) {
+    /**
+     * Fallback ultra conservador:
+     * - procura a direção que mais tempo mantém o bot vivo (simula até 20 passos);
+     * - usa área livre e aprendizado como desempate;
+     * - só se estiver TUDO muito ruim ele pega uma direção "legal" qualquer.
+     */
+    private String decidirMovimentoFallbackSuperSobrevivencia(EstadoDTO estado, Map<String, Double> scoreAprendizado) {
         int n = estado.getBoardSize();
         boolean[][] ocupado = montarMatrizOcupacao(estado);
 
         int bx = estado.getBotX();
         int by = estado.getBotY();
-        int px = estado.getPlayerX();
-        int py = estado.getPlayerY();
         String currentDir = estado.getBotDirection();
 
         Map<String, Double> scorePorDirecao = new HashMap<>();
 
         for (String dir : VALID_DIRECTIONS) {
-            // regra: não andar de ré
             if (isOpposite(dir, currentDir)) continue;
+            if (!isDirecaoSeguraImediata(estado, dir)) continue;
 
             int nx = bx;
             int ny = by;
-
             switch (dir) {
                 case "UP" -> ny--;
                 case "DOWN" -> ny++;
@@ -225,39 +345,26 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
                 case "RIGHT" -> nx++;
             }
 
-            // se sair da grade, descarta
-            if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue;
-
-            // se já está ocupado, ainda consideramos como “não seguro”,
-            // mas vamos deixar para o caso extremo (ver mais abaixo)
-            if (ocupado[ny][nx]) continue;
-
+            // area livre a partir do próximo passo
             int area = floodFillArea(nx, ny, ocupado);
-            int distPlayer = Math.abs(nx - px) + Math.abs(ny - py);
             double learned = scoreAprendizado.getOrDefault(dir, 0.0);
 
-            // lookahead: quanto essa direção permite sobreviver vários passos
-            double survival = simularSobrevivencia(nx, ny, dir, ocupado, 7);
+            // quantos passos ele consegue sobreviver seguindo essa direção e variações
+            int survivalSteps = simularPassosAteMorrer(nx, ny, dir, ocupado, 20);
 
-            // rebalanceado: mais peso em sobreviver e ter espaço,
-            // um pouco menos em encurtar distancia pra não se matar à toa
-            double score = area * 2.0     // espaço importa bastante
-                         + survival * 10.0 // sobreviver vários passos importa MUITO
-                         - distPlayer * 1.8 // agressivo, mas menos kamikaze
-                         + learned * 8.0;   // aprendizado histórico
+            // score focado em sobreviver MUITO
+            double score = survivalSteps * 1000.0    // prioridade máxima: não morrer rápido
+                         + area * 5.0               // espaço conta bastante
+                         + learned * 10.0;          // histórico ajuda, mas é terceiro critério
 
             scorePorDirecao.put(dir, score);
         }
 
         if (scorePorDirecao.isEmpty()) {
-            // aqui significa: nenhuma direção é 100% segura (todas batem em algo logo cedo)
-            // em vez de simplesmente "desistir" e retornar UP,
-            // escolhemos uma direção qualquer que ainda seja "legal" (sem ré, dentro da grade),
-            // mesmo que vá morrer depois. Isso dá a sensação de que ele luta até o fim.
+            // nenhuma direção 100% segura → ainda tentamos alguma direção "legal" (sem sair da grade)
             List<String> candidatos = new ArrayList<>();
             for (String dir : VALID_DIRECTIONS) {
                 if (isOpposite(dir, currentDir)) continue;
-
                 int nx = bx;
                 int ny = by;
                 switch (dir) {
@@ -272,11 +379,11 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
 
             if (!candidatos.isEmpty()) {
                 String escolhido = candidatos.get(new Random().nextInt(candidatos.size()));
-                log.warn("Sem movimentos totalmente seguros. Escolhendo direção legal aleatória: {}", escolhido);
+                log.warn("Fallback: sem movimentos totalmente seguros. Escolhendo direção legal aleatória: {}", escolhido);
                 return escolhido;
             }
 
-            log.warn("Sem qualquer direção válida. Retornando UP como último recurso.");
+            log.warn("Fallback: sem qualquer direção válida. Retornando UP como último recurso.");
             return "UP";
         }
 
@@ -290,15 +397,15 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
                 .collect(Collectors.toList());
 
         String escolhido = melhores.get(new Random().nextInt(melhores.size()));
-        log.debug("Fallback agressivo/aprendido escolheu {} (score = {})", escolhido, maxScore);
+        log.debug("Fallback super sobrevivência escolheu {} (score = {})", escolhido, maxScore);
         return escolhido;
     }
 
     /**
-     * Simula alguns passos à frente para medir a "sobrevivência".
-     * Quanto mais passos conseguir sem bater, maior o valor (0 a 1).
+     * Simula até "depth" passos à frente e retorna quantos passos conseguiu
+     * dar antes de morrer (bateu na parede ou rastro).
      */
-    private double simularSobrevivencia(int startX, int startY, String dirInicial, boolean[][] ocupadoOriginal, int depth) {
+    private int simularPassosAteMorrer(int startX, int startY, String dirInicial, boolean[][] ocupadoOriginal, int depth) {
         int n = ocupadoOriginal.length;
 
         boolean[][] ocupado = new boolean[n][n];
@@ -310,6 +417,8 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
         int y = startY;
         String dir = dirInicial;
 
+        if (x < 0 || x >= n || y < 0 || y >= n) return 0;
+        if (ocupado[y][x]) return 0;
         ocupado[y][x] = true;
 
         int survived = 0;
@@ -327,6 +436,8 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
 
             boolean moveFeito = false;
             for (String cand : tentativas) {
+                if (isOpposite(cand, dir)) continue;
+
                 int nx = x;
                 int ny = y;
 
@@ -337,12 +448,8 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
                     case "RIGHT" -> nx++;
                 }
 
-                if (nx < 0 || nx >= n || ny < 0 || ny >= n) {
-                    continue;
-                }
-                if (ocupado[ny][nx]) {
-                    continue;
-                }
+                if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue;
+                if (ocupado[ny][nx]) continue;
 
                 x = nx;
                 y = ny;
@@ -353,12 +460,10 @@ Qual é o movimento mais agressivo e inteligente agora (UP, DOWN, LEFT ou RIGHT)
                 break;
             }
 
-            if (!moveFeito) {
-                break;
-            }
+            if (!moveFeito) break;
         }
 
-        return (double) survived / depth;
+        return survived;
     }
 
     private int floodFillArea(int startX, int startY, boolean[][] ocupado) {

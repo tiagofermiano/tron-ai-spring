@@ -10,4 +10,5 @@ public interface JogadaRepository extends JpaRepository<Jogada, Long> {
     List<Jogada> findTop300ByOrderByIdDesc();
 
     List<Jogada> findByPartidaId(Long partidaId);
+    List<Jogada> findTop50ByEstadoJsonOrderByIdDesc(String estadoJson);
 }
