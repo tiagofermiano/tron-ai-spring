@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>TRON IA - Histórico</title>
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at top, #151a3b 0%, #05060c 65%);
+            color: #fff;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(0,0,0,.3);
+        }
+        th, td {
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(255,255,255,.1);
+            font-size: 14px;
+        }
+        th {
+            text-align: left;
+            background: rgba(255,255,255,.04);
+        }
+        a {
+            color: #bbb;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Histórico de partidas</h1>
+    <table>
+        <thead>
+        <tr>
+            <th>ID</th>
+            <th>Vencedor</th>
+            <th>Data/Hora</th>
+            <th>Turnos</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="p : ${partidas}">
+            <td th:text="${p.id}">1</td>
+            <td th:text="${p.vencedor}">PLAYER</td>
+            <td th:text="${#temporals.format(p.dataHora, 'dd/MM/yyyy HH:mm')}">data</td>
+            <td th:text="${p.duracaoTurnos}">0</td>
+        </tr>
+        </tbody>
+    </table>
+
+    <p><a href="/">Voltar ao menu</a></p>
+</div>
+</body>
+</html>

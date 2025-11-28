@@ -1,33 +1,159 @@
 <!DOCTYPE html>
 <html xmlns:th="http://www.thymeleaf.org">
 <head>
-    <title>TRON IA</title>
+    <meta charset="UTF-8">
+    <title>TRON IA - Jogo</title>
     <style>
         body {
-            background: radial-gradient(circle at top, #12162e 0%, #06070f 70%);
-            color: #fff;
-            font-family: 'Consolas';
+            margin: 0;
+            height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            height: 100vh;
-            margin: 0;
+            background: radial-gradient(circle at top, #151a3b 0%, #05060c 65%);
+            color: #fff;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .wrapper {
+            position: relative; /* necessário pro overlay */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+        h1 {
+            font-size: 28px;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            text-shadow: 0 0 16px rgba(0, 255, 255, .7);
+            margin-bottom: 8px;
         }
         canvas {
-            border: 2px solid #6e00ff;
-            box-shadow: 0 0 25px #6e00ff;
+            border-radius: 18px;
+            box-shadow:
+                    0 0 40px rgba(0, 255, 255, .2),
+                    0 0 80px rgba(255, 0, 255, .2);
+            background: #050811;
+        }
+        .info {
+            font-size: 14px;
+            opacity: .8;
+            text-align: center;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        #status-label {
+            font-size: 13px;
+            opacity: .9;
+        }
+        button {
+            padding: 6px 16px;
+            border-radius: 999px;
+            border: 1px solid #6e00ff;
+            background: transparent;
+            color: #fff;
+            cursor: pointer;
+            transition: background .2s, transform .1s, box-shadow .2s;
+        }
+        button:hover {
+            background: rgba(110,0,255,.2);
+            box-shadow: 0 0 16px rgba(110,0,255,.5);
+            transform: translateY(-1px);
+        }
+        a {
+            color:#aaa;
+            font-size: 13px;
+            margin-top: 4px;
+            text-decoration: none;
+        }
+        a:hover {
+            color:#fff;
+        }
+
+        /* Overlay de fim de jogo */
+        .overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at top, rgba(26, 33, 80, 0.96), rgba(5, 6, 12, 0.98));
+            backdrop-filter: blur(6px);
+        }
+        .overlay.hidden {
+            display: none;
+        }
+        .overlay-card {
+            min-width: 260px;
+            max-width: 360px;
+            padding: 20px 22px;
+            border-radius: 18px;
+            background: rgba(3, 5, 15, 0.92);
+            box-shadow:
+                    0 0 24px rgba(110, 0, 255, .4),
+                    0 0 64px rgba(0, 255, 255, .35);
+            text-align: center;
+        }
+        .overlay-card h2 {
+            margin: 0 0 6px;
+            font-size: 20px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        .overlay-card p {
+            margin: 0 0 14px;
+            font-size: 14px;
+            opacity: .85;
+        }
+        .overlay-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .btn-secondary {
+            border-color: rgba(255,255,255,.25);
         }
     </style>
 </head>
-
 <body>
+<div class="wrapper">
+    <h1>TRON IA</h1>
 
-<div>
-    <h1 style="text-align:center;">TRON IA</h1>
-    <canvas id="tronCanvas" width="600" height="600"></canvas>
+    <!-- Canvas do jogo -->
+    <canvas id="tron-canvas" width="600" height="600"></canvas>
+
+    <div class="info">
+        Use as setas ou WASD para mover.<br/>
+        Azul = Você | Rosa = Bot IA
+    </div>
+
+    <div class="controls">
+        <!-- Botão compatível com o JS -->
+        <button id="btn-start">Novo jogo</button>
+        <!-- Label de status -->
+        <div id="status-label"></div>
+    </div>
+
+    <a href="/">Voltar ao menu</a>
+
+    <!-- Overlay de fim de jogo -->
+    <div id="game-overlay" class="overlay hidden">
+        <div class="overlay-card">
+            <h2 id="overlay-title">Fim de jogo</h2>
+            <p id="overlay-subtitle">Mensagem</p>
+            <div class="overlay-actions">
+                <button id="overlay-restart">Jogar novamente</button>
+                <button id="overlay-menu" class="btn-secondary">Voltar ao menu</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="/js/tron.js"></script>
-
 </body>
 </html>
