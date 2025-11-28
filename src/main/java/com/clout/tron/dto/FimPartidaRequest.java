@@ -4,6 +4,8 @@ import lombok.Data;
 
 @Data
 public class FimPartidaRequest {
-    private String vencedor;
+
+    private Long partidaId;
+    private String vencedor; // "PLAYER" ou "BOT"
     private int turnos;
 }

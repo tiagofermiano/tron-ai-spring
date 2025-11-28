@@ -12,19 +12,26 @@ import java.util.List;
 @RequiredArgsConstructor
 public class PartidaService {
 
-    private final PartidaRepository repository;
+    private final PartidaRepository partidaRepository;
 
-    public void registrar(String vencedor, int turnos) {
-        Partida p = Partida.builder()
-                .dataHora(LocalDateTime.now())
-                .vencedor(vencedor)
-                .duracaoTurnos(turnos)
-                .build();
-
-        repository.save(p);
+    public Long novaPartida() {
+        Partida p = new Partida();
+        p.setDataHora(LocalDateTime.now());
+        p.setDuracaoTurnos(0);
+        p.setVencedor(null);
+        partidaRepository.save(p);
+        return p.getId();
     }
 
-    public List<Partida> listar() {
-        return repository.findAll();
+    public void finalizar(Long partidaId, String vencedor, int turnos) {
+        Partida p = partidaRepository.findById(partidaId)
+                .orElseThrow(() -> new IllegalArgumentException("Partida não encontrada: " + partidaId));
+        p.setVencedor(vencedor);
+        p.setDuracaoTurnos(turnos);
+        partidaRepository.save(p);
+    }
+
+    public List<Partida> listarHistorico() {
+        return partidaRepository.findAllByOrderByDataHoraDesc();
     }
 }

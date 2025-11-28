@@ -8,13 +8,7 @@ import org.springframework.context.annotation.Configuration;
 public class AiConfig {
 
     @Bean
-    ChatClient chatClient(ChatClient.Builder builder) {
-        return builder
-                .defaultSystem("""
-                        Você é um bot de TRON.
-                        Responda SEMPRE com apenas uma das palavras: UP, DOWN, LEFT ou RIGHT.
-                        Não explique, não escreva frases.
-                        """)
-                .build();
+    public ChatClient chatClient(ChatClient.Builder builder) {
+        return builder.build();
     }
 }

@@ -1,24 +1,26 @@
 package com.clout.tron.entity;
 
 import jakarta.persistence.*;
-import lombok.*;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "partida")
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-@Builder
+@Getter
+@Setter
 public class Partida {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private LocalDateTime dataHora;
+    private String vencedor; // "PLAYER" ou "BOT"
 
-    private String vencedor;      // "PLAYER" ou "BOT"
-    private int duracaoTurnos;
+    @Column(name = "duracao_turnos")
+    private Integer duracaoTurnos;
+
+    @Column(name = "data_hora")
+    private LocalDateTime dataHora;
 }

@@ -14,8 +14,7 @@ public class HistoricoController {
 
     @GetMapping("/historico")
     public String historico(Model model) {
-        model.addAttribute("partidas", service.listar());
+        model.addAttribute("partidas", service.listarHistorico());
         return "historico";
     }
-
 }
